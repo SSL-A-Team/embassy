@@ -2,6 +2,7 @@
 
 use core::marker::PhantomData;
 
+use embassy_cortex_m::interrupt::InterruptExt;
 use embassy_hal_common::{into_ref, PeripheralRef};
 
 use crate::dma::NoDma;
@@ -158,6 +159,51 @@ impl<'d, T: BasicInstance, RxDma> UartRx<'d, T, RxDma> {
         let transfer = crate::dma::read(ch, request, rdr(T::regs()), buffer);
         transfer.await;
         Ok(())
+    }
+
+    // DMA read until UART goes into idle
+    // Returns number of bytes read and written to buffer
+    pub async fn read_to_idle<E: InterruptExt>(&mut self, buffer: &mut [u8], uart_int: &E) -> Result<usize, Error>
+    where
+        RxDma: crate::usart::RxDma<T>,
+    {
+        let ch = &mut self.rx_dma;
+        let request = ch.request();
+        unsafe {
+            T::regs().cr3().modify(|reg| {
+                reg.set_dmar(true);
+            });
+            T::regs().icr().write(|w| {
+                w.set_idlecf(true);
+            });
+            T::regs().cr1().modify(|w| {
+                w.set_idleie(true);
+            });
+        }
+
+        uart_int.set_handler(|ctx| {
+            if unsafe { T::regs().isr().read().idle() } {
+                unsafe {
+                    T::regs().icr().write(|w| {
+                        w.set_idlecf(true);
+                    });
+                }
+
+                let ch = unsafe { &mut *(ctx as *mut PeripheralRef<RxDma>) };
+                ch.request_stop();
+                RxDma::on_irq();
+            }
+        });
+        uart_int.set_handler_context(ch as *mut _ as *mut ());
+        uart_int.enable();
+
+        let transfer = crate::dma::read(ch, request, rdr(T::regs()), buffer);
+        transfer.await;
+
+        uart_int.disable();
+
+        let ch = &mut self.rx_dma;
+        Ok(buffer.len() - ch.remaining_transfers() as usize)
     }
 
     pub fn blocking_read(&mut self, buffer: &mut [u8]) -> Result<(), Error> {
