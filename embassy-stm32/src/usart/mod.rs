@@ -189,18 +189,26 @@ impl<'d, T: BasicInstance, RxDma> UartRx<'d, T, RxDma> {
                     });
                 }
 
-                let ch = unsafe { &mut *(ctx as *mut PeripheralRef<RxDma>) };
+                let (ch, buf_size) = unsafe { &mut *(ctx as *mut (&mut PeripheralRef<RxDma>, usize)) };
+
+                if ch.remaining_transfers() as usize == *buf_size {
+                    return;
+                }
+
                 ch.request_stop();
                 RxDma::on_irq();
             }
         });
-        uart_int.set_handler_context(ch as *mut _ as *mut ());
+        let mut int_data = (ch, buffer.len());
+        uart_int.set_handler_context(&mut int_data as *mut _ as *mut ());
         uart_int.enable();
 
+        let ch = &mut self.rx_dma;
         let transfer = crate::dma::read(ch, request, rdr(T::regs()), buffer);
         transfer.await;
 
         uart_int.disable();
+        uart_int.remove_handler();
 
         let ch = &mut self.rx_dma;
         Ok(buffer.len() - ch.remaining_transfers() as usize)
