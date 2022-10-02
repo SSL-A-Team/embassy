@@ -163,7 +163,7 @@ impl<'d, T: BasicInstance, RxDma> UartRx<'d, T, RxDma> {
 
     // DMA read until UART goes into idle
     // Returns number of bytes read and written to buffer
-    pub async fn read_to_idle<E: InterruptExt>(&mut self, buffer: &mut [u8], uart_int: &E) -> Result<usize, Error>
+    pub async fn read_to_idle(&mut self, buffer: &mut [u8], uart_int: PeripheralRef<'_, T::Interrupt>) -> Result<usize, Error>
     where
         RxDma: crate::usart::RxDma<T>,
     {
