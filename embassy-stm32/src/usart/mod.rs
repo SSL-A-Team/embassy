@@ -8,7 +8,6 @@ use atomic_polyfill::{compiler_fence, Ordering};
 use embassy_cortex_m::interrupt::InterruptExt;
 use embassy_futures::select::{select, Either};
 use embassy_hal_common::drop::OnDrop;
-use embassy_cortex_m::interrupt::InterruptExt;
 use embassy_hal_common::{into_ref, PeripheralRef};
 
 use crate::dma::NoDma;
