@@ -8,6 +8,7 @@ use atomic_polyfill::{compiler_fence, Ordering};
 use embassy_cortex_m::interrupt::InterruptExt;
 use embassy_futures::select::{select, Either};
 use embassy_hal_common::drop::OnDrop;
+use embassy_cortex_m::interrupt::InterruptExt;
 use embassy_hal_common::{into_ref, PeripheralRef};
 
 use crate::dma::NoDma;
@@ -357,6 +358,59 @@ impl<'d, T: BasicInstance, RxDma> UartRx<'d, T, RxDma> {
                 Err(nb::Error::WouldBlock)
             }
         }
+    }
+
+    // DMA read until UART goes into idle
+    // Returns number of bytes read and written to buffer
+    pub async fn read_to_idle(&mut self, buffer: &mut [u8], uart_int: PeripheralRef<'_, T::Interrupt>) -> Result<usize, Error>
+    where
+        RxDma: crate::usart::RxDma<T>,
+    {
+        let ch = &mut self.rx_dma;
+        let request = ch.request();
+        unsafe {
+            T::regs().cr3().modify(|reg| {
+                reg.set_dmar(true);
+            });
+            T::regs().icr().write(|w| {
+                w.set_idlecf(true);
+            });
+            T::regs().cr1().modify(|w| {
+                w.set_idleie(true);
+            });
+        }
+
+        uart_int.set_handler(|ctx| {
+            if unsafe { T::regs().isr().read().idle() } {
+                unsafe {
+                    T::regs().icr().write(|w| {
+                        w.set_idlecf(true);
+                    });
+                }
+
+                let (ch, buf_size) = unsafe { &mut *(ctx as *mut (&mut PeripheralRef<RxDma>, usize)) };
+
+                if ch.remaining_transfers() as usize == *buf_size {
+                    return;
+                }
+
+                ch.request_stop();
+                RxDma::on_irq();
+            }
+        });
+        let mut int_data = (ch, buffer.len());
+        uart_int.set_handler_context(&mut int_data as *mut _ as *mut ());
+        uart_int.enable();
+
+        let ch = &mut self.rx_dma;
+        let transfer = crate::dma::read(ch, request, rdr(T::regs()), buffer);
+        transfer.await;
+
+        uart_int.disable();
+        uart_int.remove_handler();
+
+        let ch = &mut self.rx_dma;
+        Ok(buffer.len() - ch.remaining_transfers() as usize)
     }
 
     pub fn blocking_read(&mut self, buffer: &mut [u8]) -> Result<(), Error> {
